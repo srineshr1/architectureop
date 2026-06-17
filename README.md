@@ -107,6 +107,29 @@ Each of these takes ~1 minute in the dashboard.
 2. Click **🌊 Cache Stampede**. The cache is flushed and a burst of traffic hits
    the cold cache at once — watch the brief surge of concurrent DB queries.
 
+## Optimizations panel
+
+Beyond the Redis cache and auto-scaling, the dashboard's **Optimizations** panel
+toggles four real read-path optimizations live, each with a visible before/after:
+
+- **DB index on `stock`** — the slow query does a full sequential scan over
+  400k rows (~38ms p95 under load); enabling the index flips the plan to an
+  index scan and p95 drops to ~3ms.
+- **PgBouncer pooling** — routes workers through a transaction-pooling proxy.
+  4 workers go from ~42 Postgres backends to ~10 while serving the same load.
+- **Read replicas** — an independent read-only Postgres copy (the data is
+  static after seeding). Flipping it on moves read load off the primary: in a
+  slow-query test the primary's container CPU dropped from ~550% to ~1% while
+  the replica took it on. Shows that read scale-out helps a DB-bound workload
+  where adding app instances doesn't.
+- **Load shedding** — worker admission control. Under overload it caps
+  concurrent in-flight requests and returns `429` for the excess, keeping
+  accepted-request latency bounded (e.g. ~18ms instead of hundreds of ms) while
+  the shed counter climbs.
+
+Together with the cache and autoscaler, these cover the full read path:
+index → pooler → replicas → cache → autoscale → load-shed.
+
 ## Host development (live reload)
 
 Run Postgres/Redis/Traefik in Docker but the control plane + dashboard on the

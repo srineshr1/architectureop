@@ -16,6 +16,7 @@ from .autoscaler import AutoScaler
 from .collector import MetricsCollector
 from .config import settings
 from .loadgen import LoadGenerator
+from . import optimizations
 from .orchestrator import Orchestrator, OrchestratorError
 
 app = FastAPI(title="ReadIssue Control Plane", version="1.0")
@@ -32,11 +33,26 @@ app.add_middleware(
 # workers via their startup env.
 cache_state = {"enabled": False}
 
+# Read-path optimization toggles surfaced on the dashboard.
+optimization_state = {
+    "index": False,       # index on products.stock
+    "pgbouncer": False,   # workers routed through PgBouncer
+    "replicas": False,    # reads spread across read replicas
+    "rate_limit": False,  # worker load shedding
+}
+
 
 def _spawn_worker():
-    return orchestrator.create_instance(
-        extra_env={"CACHE_ENABLED": "true" if cache_state["enabled"] else "false"}
-    )
+    return orchestrator.create_instance(extra_env=_worker_extra_env())
+
+
+def _worker_extra_env() -> dict:
+    """Env passed to newly-spawned workers reflecting current toggles."""
+    env = {"CACHE_ENABLED": "true" if cache_state["enabled"] else "false"}
+    if optimization_state["pgbouncer"]:
+        env["POSTGRES_HOST"] = "pgbouncer"
+        env["POSTGRES_PORT"] = "6432"
+    return env
 
 
 orchestrator = Orchestrator()
@@ -52,6 +68,7 @@ collector = MetricsCollector(
     load_status_fn=loadgen.status,
     cache_status_fn=lambda: dict(cache_state),
     autoscale_status_fn=lambda: autoscaler.status(),
+    optimization_status_fn=lambda: dict(optimization_state),
 )
 
 
@@ -234,6 +251,90 @@ async def scenario_stampede(payload: dict | None = None):
     loadgen.trigger_spike(peak, duration, ramp_s=1.0)
     return {"scenario": "cache_stampede", "flushed": flushed,
             "peak_rps": peak, "duration_s": duration}
+
+
+# ----------------------------- optimizations -----------------------------
+def _db_hosts() -> list[str]:
+    """DB hosts the control plane manages DDL on (primary + replicas)."""
+    hosts = [settings.collector_pg_host]
+    hosts += [h.strip() for h in settings.replica_hosts.split(",") if h.strip()]
+    return hosts
+
+
+@app.get("/api/optimizations")
+def get_optimizations():
+    return dict(optimization_state)
+
+
+@app.post("/api/optimizations/index")
+async def set_index(payload: dict):
+    enabled = bool(payload.get("enabled", not optimization_state["index"]))
+    results = await optimizations.set_stock_index(enabled, _db_hosts())
+    optimization_state["index"] = enabled
+    return {"index": enabled, "hosts": results}
+
+
+def _recreate_workers() -> int:
+    """Recreate all workers so they pick up current routing env (DB host etc)."""
+    n = orchestrator.count_instances()
+    orchestrator.destroy_all()
+    for _ in range(n):
+        try:
+            orchestrator.create_instance(extra_env=_worker_extra_env())
+        except OrchestratorError:
+            break
+    return n
+
+
+@app.post("/api/optimizations/pgbouncer")
+def set_pgbouncer(payload: dict):
+    enabled = bool(payload.get("enabled", not optimization_state["pgbouncer"]))
+    optimization_state["pgbouncer"] = enabled
+    recreated = _recreate_workers()
+    return {"pgbouncer": enabled, "recreated_workers": recreated}
+
+
+@app.post("/api/optimizations/replicas")
+async def set_replicas(payload: dict):
+    enabled = bool(payload.get("enabled", not optimization_state["replicas"]))
+    optimization_state["replicas"] = enabled
+    # Fan out to workers: flip read routing (pools are pre-connected, instant).
+    instances = orchestrator.list_instances()
+    results = []
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        for inst in instances:
+            ip = inst.get("ip")
+            if not ip:
+                continue
+            try:
+                r = await client.post(f"http://{ip}:8000/db", json={"replicas": enabled})
+                results.append({inst["worker_id"]: r.json().get("use_replicas")})
+            except Exception as exc:  # noqa: BLE001
+                results.append({inst["worker_id"]: f"error: {exc}"})
+    return {"replicas": enabled, "workers": results}
+
+
+@app.post("/api/optimizations/rate_limit")
+async def set_rate_limit(payload: dict):
+    enabled = bool(payload.get("enabled", not optimization_state["rate_limit"]))
+    max_inflight = int(payload.get("max_in_flight", 50) or 50)
+    optimization_state["rate_limit"] = enabled
+    instances = orchestrator.list_instances()
+    results = []
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        for inst in instances:
+            ip = inst.get("ip")
+            if not ip:
+                continue
+            try:
+                r = await client.post(
+                    f"http://{ip}:8000/shed",
+                    json={"enabled": enabled, "max_inflight": max_inflight},
+                )
+                results.append({inst["worker_id"]: r.json().get("enabled")})
+            except Exception as exc:  # noqa: BLE001
+                results.append({inst["worker_id"]: f"error: {exc}"})
+    return {"rate_limit": enabled, "max_in_flight": max_inflight, "workers": results}
 
 
 @app.websocket("/ws/metrics")

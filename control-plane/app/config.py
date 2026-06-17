@@ -21,6 +21,9 @@ class Settings:
         # control plane runs in-network; override to "localhost" for host dev
         # (the published 5432 port) WITHOUT affecting what workers receive.
         self.collector_pg_host = os.environ.get("COLLECTOR_PG_HOST", self.postgres_host)
+
+        # Read replicas (comma-separated hostnames; each a read-only Postgres).
+        self.replica_hosts = os.environ.get("REPLICA_HOSTS", "replica")
         self.redis_host = os.environ.get("REDIS_HOST", "redis")
         self.redis_port = os.environ.get("REDIS_PORT", "6379")
         self.db_pool_size = os.environ.get("DB_POOL_SIZE", "10")
@@ -41,6 +44,7 @@ class Settings:
             "REDIS_HOST": self.redis_host,
             "REDIS_PORT": self.redis_port,
             "DB_POOL_SIZE": self.db_pool_size,
+            "REPLICA_HOSTS": self.replica_hosts,
         }
         if extra:
             env.update(extra)

@@ -24,14 +24,16 @@ build:
 	docker compose build
 
 up: build
-	docker compose up -d postgres redis traefik
+	docker compose up -d postgres replica redis traefik pgbouncer
 	docker compose run --rm seeder
+	docker compose run --rm -e POSTGRES_HOST=replica seeder
 	docker compose up -d control-plane frontend
 	@echo ""
 	@echo "ReadIssue is up → open http://localhost:3000"
 
 seed:
 	docker compose run --rm seeder
+	docker compose run --rm -e POSTGRES_HOST=replica seeder
 
 down:
 	docker compose down

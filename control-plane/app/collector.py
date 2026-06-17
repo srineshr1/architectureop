@@ -61,15 +61,18 @@ def derive_rps(curr_total: int, prev_total: Optional[int], dt: float) -> float:
 # ----------------------------- collector -----------------------------
 class MetricsCollector:
     def __init__(self, orchestrator: Orchestrator, interval: float = 1.0,
-                 load_status_fn=None, cache_status_fn=None, autoscale_status_fn=None):
+                 load_status_fn=None, cache_status_fn=None, autoscale_status_fn=None,
+                 optimization_status_fn=None):
         self.orch = orchestrator
         self.interval = interval
         self.load_status_fn = load_status_fn
         self.cache_status_fn = cache_status_fn
         self.autoscale_status_fn = autoscale_status_fn
+        self.optimization_status_fn = optimization_status_fn
         self.latest: dict = {"ts": 0, "instances": [], "system": {}, "db": {},
-                             "load": {}, "cache": {}, "autoscale": {}}
+                             "load": {}, "cache": {}, "autoscale": {}, "optimizations": {}}
         self._prev: Dict[str, tuple] = {}  # worker_id -> (requests_total, ts)
+        self._prev_cpu: Dict[str, dict] = {}  # worker_id -> last cpu_stats dict
         self._subscribers: set[asyncio.Queue] = set()
         self._task: Optional[asyncio.Task] = None
         self._running = False
@@ -122,7 +125,13 @@ class MetricsCollector:
     # --- gathering ---
     def _docker_stats(self, container_id: str) -> dict:
         c = self.orch._client.containers.get(container_id)
-        return c.stats(stream=False)
+        # one_shot returns immediately with cumulative counters; we compute the
+        # CPU delta against our OWN previous sample (a consistent ~interval
+        # window) rather than trusting the unreliable one-shot precpu_stats.
+        try:
+            return c.stats(stream=False, one_shot=True)
+        except TypeError:
+            return c.stats(stream=False)
 
     async def _worker_metrics(self, client: httpx.AsyncClient, ip: str) -> dict:
         r = await client.get(f"http://{ip}:8000/metrics", timeout=2.0)
@@ -136,7 +145,17 @@ class MetricsCollector:
         if ip:
             try:
                 stats = await asyncio.to_thread(self._docker_stats, inst["container_id"])
-                cpu = compute_cpu_percent(stats)
+                # Accurate CPU%: diff current cumulative counters against our
+                # previous sample (~interval apart), mirroring `docker stats`.
+                curr_cpu = stats.get("cpu_stats", {})
+                prev_cpu = self._prev_cpu.get(wid)
+                if prev_cpu and prev_cpu.get("system_cpu_usage"):
+                    cpu = compute_cpu_percent(
+                        {"cpu_stats": curr_cpu, "precpu_stats": prev_cpu}
+                    )
+                else:
+                    cpu = 0.0
+                self._prev_cpu[wid] = curr_cpu
                 mem = compute_mem_mb(stats)
             except Exception:
                 pass
@@ -163,17 +182,14 @@ class MetricsCollector:
             "latency_p50_ms": wm.get("latency_p50_ms", 0.0),
             "latency_p95_ms": wm.get("latency_p95_ms", 0.0),
             "cache_hit_ratio": wm.get("cache_hit_ratio", 0.0),
+            "shed_total": int(wm.get("shed_total", 0)),
         }
 
-    async def _pg_stats(self) -> dict:
+    async def _active_queries(self, host: str, port: int = 5432):
         try:
             conn = await asyncpg.connect(
-                user=settings.postgres_user,
-                password=settings.postgres_password,
-                host=settings.collector_pg_host,
-                port=int(settings.postgres_port),
-                database=settings.postgres_db,
-                timeout=2.0,
+                user=settings.postgres_user, password=settings.postgres_password,
+                host=host, port=port, database=settings.postgres_db, timeout=2.0,
             )
             try:
                 total = await conn.fetchval(
@@ -185,11 +201,28 @@ class MetricsCollector:
                     "WHERE datname = $1 AND state = 'active'",
                     settings.postgres_db,
                 )
-                return {"connections": int(total), "active_queries": int(active)}
+                return int(total), int(active)
             finally:
                 await conn.close()
         except Exception:
-            return {"connections": None, "active_queries": None}
+            return None, None
+
+    async def _pg_stats(self) -> dict:
+        total, active = await self._active_queries(settings.collector_pg_host)
+        # Sum active queries across replicas to show read-spread.
+        replica_hosts = [h.strip() for h in settings.replica_hosts.split(",") if h.strip()]
+        replica_active = 0
+        replica_seen = False
+        for rh in replica_hosts:
+            _t, a = await self._active_queries(rh)
+            if a is not None:
+                replica_active += a
+                replica_seen = True
+        return {
+            "connections": total,
+            "active_queries": active,
+            "replica_active_queries": replica_active if replica_seen else None,
+        }
 
     async def gather(self) -> dict:
         now = time.time()
@@ -204,6 +237,7 @@ class MetricsCollector:
         # prune prev-state for instances that are gone
         live_ids = {i["worker_id"] for i in running}
         self._prev = {k: v for k, v in self._prev.items() if k in live_ids}
+        self._prev_cpu = {k: v for k, v in self._prev_cpu.items() if k in live_ids}
 
         pg = await self._pg_stats()
 
@@ -228,12 +262,20 @@ class MetricsCollector:
             except Exception:
                 autoscale = {}
 
+        opts = {}
+        if self.optimization_status_fn is not None:
+            try:
+                opts = self.optimization_status_fn()
+            except Exception:
+                opts = {}
+
         n = len(per_instance)
         total_rps = round(sum(i["rps"] for i in per_instance), 1)
         avg_cpu = round(sum(i["cpu_pct"] for i in per_instance) / n, 2) if n else 0.0
         max_p95 = max((i["latency_p95_ms"] for i in per_instance), default=0.0)
         total_inflight = sum(i["in_flight"] for i in per_instance)
         total_errors = sum(i["errors_total"] for i in per_instance)
+        total_shed = sum(i.get("shed_total", 0) for i in per_instance)
 
         return {
             "ts": round(now, 3),
@@ -245,9 +287,11 @@ class MetricsCollector:
                 "max_latency_p95_ms": max_p95,
                 "total_in_flight": total_inflight,
                 "total_errors": total_errors,
+                "total_shed": total_shed,
             },
             "db": pg,
             "load": load,
             "cache": cache,
             "autoscale": autoscale,
+            "optimizations": opts,
         }

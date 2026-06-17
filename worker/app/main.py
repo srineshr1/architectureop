@@ -25,6 +25,12 @@ db = Database()
 cache = Cache()
 metrics = Metrics(WORKER_ID)
 
+# Load-shedding / admission control state.
+rate_limit = {
+    "enabled": os.environ.get("RATE_LIMIT_ENABLED", "false").lower() == "true",
+    "max_inflight": int(os.environ.get("MAX_INFLIGHT", "50")),
+}
+
 
 @app.on_event("startup")
 async def _startup() -> None:
@@ -43,6 +49,16 @@ async def _track(request: Request, call_next):
     # Don't count introspection endpoints as user traffic.
     if request.url.path in ("/metrics", "/health"):
         return await call_next(request)
+
+    # Admission control: if shedding is on and we're already at the concurrency
+    # limit, reject fast with 429 instead of queueing (protects accepted-request
+    # latency). in_flight is the count of requests currently being processed.
+    if rate_limit["enabled"] and metrics.in_flight >= rate_limit["max_inflight"]:
+        metrics.record_shed()
+        return JSONResponse(
+            {"error": "overloaded", "worker_id": WORKER_ID}, status_code=429
+        )
+
     metrics.begin()
     t0 = time.perf_counter()
     error = False
@@ -114,6 +130,28 @@ async def set_cache(payload: dict):
     if payload.get("flush"):
         await cache.flush()
     return {"worker_id": WORKER_ID, "cache_enabled": cache.enabled}
+
+
+@app.post("/db")
+async def set_db(payload: dict):
+    """Toggle replica read-routing at runtime (read-replica optimization)."""
+    if "replicas" in payload:
+        db.set_use_replicas(bool(payload["replicas"]))
+    return {
+        "worker_id": WORKER_ID,
+        "use_replicas": db.use_replicas,
+        "replica_count": len(db._replica_pools),
+    }
+
+
+@app.post("/shed")
+async def set_shed(payload: dict):
+    """Toggle load shedding / set the in-flight concurrency cap."""
+    if "enabled" in payload:
+        rate_limit["enabled"] = bool(payload["enabled"])
+    if payload.get("max_inflight"):
+        rate_limit["max_inflight"] = int(payload["max_inflight"])
+    return {"worker_id": WORKER_ID, **rate_limit}
 
 
 @app.get("/cache")

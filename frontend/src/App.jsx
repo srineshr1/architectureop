@@ -5,6 +5,7 @@ import Controls from './Controls'
 import Scaling from './Scaling'
 import Autoscale from './Autoscale'
 import Scenarios from './Scenarios'
+import Optimizations from './Optimizations'
 import './App.css'
 
 function Stat({ label, value, unit, warn }) {
@@ -44,6 +45,7 @@ export default function App() {
         <Stat label="p95 latency" value={p95.toFixed(1)} unit="ms" warn={p95 >= 100} />
         <Stat label="DB conns" value={snapshot?.db?.connections ?? '–'} />
         <Stat label="Errors" value={sys.total_errors ?? 0} warn={(sys.total_errors ?? 0) > 0} />
+        <Stat label="Shed (429)" value={sys.total_shed ?? 0} />
       </section>
 
       <main className="layout">
@@ -51,6 +53,7 @@ export default function App() {
           <Controls snapshot={snapshot} />
           <Scaling snapshot={snapshot} />
           <Autoscale snapshot={snapshot} />
+          <Optimizations snapshot={snapshot} />
         </div>
         <div className="center panel">
           <div className="panel-title">Topology</div>

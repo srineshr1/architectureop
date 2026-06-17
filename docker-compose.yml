@@ -22,6 +22,28 @@ services:
     networks:
       - lab
 
+  # Read replica: an independent read-only Postgres copy. Because the dataset
+  # is static after seeding, an identically-seeded copy behaves like a read
+  # replica for the purpose of spreading read load.
+  replica:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - pgdata_replica:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      - lab
+
   seeder:
     build: ./seeder
     environment:
@@ -48,6 +70,26 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+    networks:
+      - lab
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.25.2-p0
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      LISTEN_PORT: "6432"
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "1000"
+      DEFAULT_POOL_SIZE: "20"
+      ADMIN_USERS: ${POSTGRES_USER}
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - lab
 
@@ -123,6 +165,7 @@ services:
 
 volumes:
   pgdata:
+  pgdata_replica:
 
 networks:
   lab:

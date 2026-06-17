@@ -26,6 +26,11 @@ export const api = {
   scenarioCrash: () => jpost('/api/scenario/crash'),
   scenarioStampede: (peak_rps, duration_s) =>
     jpost('/api/scenario/stampede', { peak_rps, duration_s }),
+  setIndex: (enabled) => jpost('/api/optimizations/index', { enabled }),
+  setPgbouncer: (enabled) => jpost('/api/optimizations/pgbouncer', { enabled }),
+  setReplicas: (enabled) => jpost('/api/optimizations/replicas', { enabled }),
+  setRateLimit: (enabled, max_in_flight) =>
+    jpost('/api/optimizations/rate_limit', { enabled, max_in_flight }),
 }
 
 // Keep a rolling history of snapshots for the time-series charts.

@@ -30,7 +30,7 @@ body { margin: 0; }
 
 .stat-bar {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(8, 1fr);
   gap: 10px;
   margin-bottom: 16px;
 }
@@ -102,6 +102,15 @@ body { margin: 0; }
 .scenario-buttons button.danger { border-color: #ef444466; }
 .scenario-buttons button.warn { border-color: #f59e0b66; }
 .scenario-msg { font-size: 11px; color: var(--muted); margin-top: 10px; font-family: monospace; word-break: break-all; }
+
+/* Optimizations */
+.opt-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.opt-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.opt-text { display: flex; flex-direction: column; }
+.opt-label { font-size: 13px; color: var(--text); }
+.opt-desc { font-size: 11px; color: var(--muted); }
+.opt-toggle { background: #1e293b; border: 1px solid var(--border); color: var(--muted); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 12px; font-weight: 600; min-width: 52px; }
+.opt-toggle.on { border-color: #22c55e; color: #22c55e; background: #22c55e11; }
 
 /* Charts */
 .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }

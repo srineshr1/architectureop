@@ -22,6 +22,7 @@ class Metrics:
         self.in_flight = 0
         self.cache_hits = 0
         self.cache_misses = 0
+        self.shed_total = 0
         self._start = time.time()
 
     # --- request lifecycle ---
@@ -44,6 +45,10 @@ class Metrics:
                 self.cache_hits += 1
             else:
                 self.cache_misses += 1
+
+    def record_shed(self) -> None:
+        with self._lock:
+            self.shed_total += 1
 
     # --- derived ---
     @staticmethod
@@ -76,5 +81,6 @@ class Metrics:
                 "cache_hits": self.cache_hits,
                 "cache_misses": self.cache_misses,
                 "cache_hit_ratio": round(hit_ratio, 4),
+                "shed_total": self.shed_total,
                 "uptime_s": round(time.time() - self._start, 1),
             }
