@@ -182,6 +182,8 @@ class MetricsCollector:
             "latency_p50_ms": wm.get("latency_p50_ms", 0.0),
             "latency_p95_ms": wm.get("latency_p95_ms", 0.0),
             "cache_hit_ratio": wm.get("cache_hit_ratio", 0.0),
+            "cache_hits": int(wm.get("cache_hits", 0)),
+            "cache_misses": int(wm.get("cache_misses", 0)),
             "shed_total": int(wm.get("shed_total", 0)),
         }
 
@@ -254,6 +256,15 @@ class MetricsCollector:
                 cache = self.cache_status_fn()
             except Exception:
                 cache = {}
+        # Aggregate live hit ratio across workers so the cache effect is visible.
+        c_hits = sum(i.get("cache_hits", 0) for i in per_instance)
+        c_misses = sum(i.get("cache_misses", 0) for i in per_instance)
+        cache = {
+            **cache,
+            "hits": c_hits,
+            "misses": c_misses,
+            "hit_ratio": round(c_hits / (c_hits + c_misses), 4) if (c_hits + c_misses) else 0.0,
+        }
 
         autoscale = {}
         if self.autoscale_status_fn is not None:

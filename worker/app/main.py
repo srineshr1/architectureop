@@ -31,6 +31,21 @@ rate_limit = {
     "max_inflight": int(os.environ.get("MAX_INFLIGHT", "50")),
 }
 
+# Skewed (hot-key) access pattern for the slow read. Real read traffic follows
+# a power law -- a small set of popular items gets most of the requests -- so a
+# modest cache of the hot set absorbs most load. HOT_KEY_RATIO of requests hit
+# the hot set of HOT_KEYS values; the rest spread across the long tail. This is
+# both more realistic than uniform random AND what makes a cache visibly work.
+STOCK_MAX = 1000
+HOT_KEYS = int(os.environ.get("HOT_KEYS", "50"))
+HOT_KEY_RATIO = float(os.environ.get("HOT_KEY_RATIO", "0.9"))
+
+
+def _pick_stock() -> int:
+    if random.random() < HOT_KEY_RATIO:
+        return random.randint(0, max(0, HOT_KEYS - 1))
+    return random.randint(0, STOCK_MAX)
+
 
 @app.on_event("startup")
 async def _startup() -> None:
@@ -93,7 +108,14 @@ async def read(
     if not db.ready:
         return JSONResponse({"error": "db not ready"}, status_code=503)
     cat = category or random.choice(CATEGORIES)
-    cache_key = f"read:{mode}:{cat}:{limit}"
+    # Build the cache key from the value the query ACTUALLY varies on, so a hit
+    # returns the correct rows: category for fast reads, the stock filter for
+    # slow reads (a bounded 0..1000 key space -> a small cache covers it all).
+    if mode == "slow":
+        stock = _pick_stock()
+        cache_key = f"read:slow:{stock}:{limit}"
+    else:
+        cache_key = f"read:fast:{cat}:{limit}"
 
     # Cache-aside: try cache first, fall back to DB and populate.
     cached = await cache.get(cache_key)
@@ -105,7 +127,7 @@ async def read(
         }
 
     if mode == "slow":
-        rows = await db.slow_read(limit=limit)
+        rows = await db.slow_read(limit=limit, stock=stock)
     else:
         rows = await db.fast_read(cat, limit=limit)
 

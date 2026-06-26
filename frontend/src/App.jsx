@@ -46,6 +46,11 @@ export default function App() {
         <Stat label="DB conns" value={snapshot?.db?.connections ?? '–'} />
         <Stat label="Errors" value={sys.total_errors ?? 0} warn={(sys.total_errors ?? 0) > 0} />
         <Stat label="Shed (429)" value={sys.total_shed ?? 0} />
+        <Stat
+          label="Cache hit"
+          value={snapshot?.cache?.enabled ? ((snapshot?.cache?.hit_ratio ?? 0) * 100).toFixed(1) : '–'}
+          unit={snapshot?.cache?.enabled ? '%' : ''}
+        />
       </section>
 
       <main className="layout">

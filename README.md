@@ -24,7 +24,7 @@ and streams live metrics to a React dashboard.
                   ┌─────────────▼────────────┐
                   │   Control Plane (FastAPI) │  orchestration, metrics,
                   │   + load gen + autoscaler │  load gen, scenarios
-                  └───┬──────────┬────────────┘
+                  └───┬──────────┬
         Docker socket │          │ HTTP load
                       │          ▼
                       │   ┌──────────────┐     ┌──────────────┐
@@ -49,35 +49,57 @@ and streams live metrics to a React dashboard.
 - **Dashboard** (`frontend/`): topology view, live charts, RPS slider, scaling
   controls, cache + auto-scale toggles, and one-click scenarios.
 
-## Quickstart (one command)
+## Prerequisites
 
-Requires Docker + Docker Compose and `make`.
+You need these installed on your machine:
+
+- **[Docker](https://docs.docker.com/engine/install/)** (v24+)
+- **[Docker Compose](https://docs.docker.com/compose/install/)** (v2+)
+- **[GNU Make](https://www.gnu.org/software/make/)** (pre-installed on Linux/macOS; on Windows use WSL2 or Git Bash)
+- **Git** (to clone the repo)
+
+Everything else (Python, Node.js, Postgres, Redis, all dependencies) runs inside
+containers — you don't need to install them locally.
+
+## Installation & Quickstart
 
 ```bash
+# 1. Clone the repo
+git clone <repo-url>
+cd ReadIssue
+
+# 2. (Optional) Configure settings
+#    Edit .env to change the dataset size (SEED_ROWS), worker cap (MAX_WORKERS),
+#    credentials, or ports. The defaults work fine.
+
+# 3. Build & start everything
 make up
 ```
 
-This builds the worker image, builds and starts the stack, seeds the database,
-then brings up the control plane and dashboard.
+That's it. The first run builds the worker image, starts Postgres + Redis +
+Traefik, seeds 400k dummy product rows, then launches the control plane and
+dashboard.
 
 Open the dashboard at **http://localhost:3000**.
 
 Other endpoints:
-- Control plane API: http://localhost:8000/api/health
-- Traefik dashboard: http://localhost:8081
+| Service | URL |
+|---|---|
+| Dashboard | http://localhost:3000 |
+| Control Plane API | http://localhost:8000/api/health |
+| Traefik Dashboard | http://localhost:8081 |
+| Postgres (primary) | localhost:5432 |
+| Postgres (replica) | localhost:5433 |
+| Redis | localhost:6379 |
 
-Tear everything down (removes dynamically-spawned workers and volumes):
+### Tear down
 
 ```bash
-make clean
+make clean    # stops stack, removes dynamic workers, drops volumes
+make down     # stops stack but keeps DB volume (data survives restart)
 ```
 
-`make help` lists all targets.
-
-### Configuration
-
-Edit `.env` to change the dataset size (`SEED_ROWS`), the worker cap
-(`MAX_WORKERS`), credentials, and ports.
+`make help` lists all available targets.
 
 ## Guided walkthroughs
 
@@ -176,10 +198,11 @@ the live stack is up.
   network.
 - **Worker cap.** `MAX_WORKERS` (default 8) bounds how many containers can be
   spawned so the lab can't exhaust your machine.
-- **Load generator ceiling.** The generator is a single Python process; it
-  reliably sustains a few hundred RPS. Worker-side metrics (CPU, p95) are the
-  source of truth for backend behaviour. To genuinely overload the backend, use
-  *slow* mode and/or fewer instances rather than only cranking RPS.
+- **Load generator.** The generator fans load across several processes
+  (`LOADGEN_PROCS`, default `min(cpu_count, 8)`) so it can drive a few thousand
+  RPS and genuinely overload the backend. Worker-side metrics (CPU, p95) are
+  still the source of truth for backend behaviour. To overload the backend you
+  can now crank RPS directly, or use *slow* mode and/or fewer instances.
 - **Data is dummy.** The seeder generates synthetic product rows; nothing here
   is production data.
 
@@ -194,4 +217,3 @@ db/init/         Postgres schema
 tests/           pytest suite
 docker-compose.yml, Makefile, .env
 ```
-# architectureop

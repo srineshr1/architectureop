@@ -94,15 +94,20 @@ class Database:
         )
         return [dict(r) for r in rows]
 
-    async def slow_read(self, limit: int = 20) -> List[dict]:
+    async def slow_read(self, limit: int = 20, stock: int | None = None) -> List[dict]:
         """Read that filters on the (by default un-indexed) ``stock`` column.
 
         Without an index this forces a sequential scan over the whole table on
         every request, which becomes a real CPU/IO bottleneck under concurrency.
         Adding an index on ``stock`` turns it into a fast index scan.
+
+        ``stock`` selects which value to filter on. The caller passes it (and
+        keys the cache on it) so caching is correct and explainable; if omitted
+        we pick a random value from the bounded 0..1000 key space.
         """
         pool = self._read_pool()
-        stock = random.randint(0, 1000)
+        if stock is None:
+            stock = random.randint(0, 1000)
         rows = await pool.fetch(
             """
             SELECT id, sku, name, category, price, stock

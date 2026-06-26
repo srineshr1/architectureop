@@ -139,6 +139,7 @@ services:
       WORKER_IMAGE: ${WORKER_IMAGE}
       LAB_NETWORK: ${LAB_NETWORK}
       MAX_WORKERS: ${MAX_WORKERS}
+      LOADGEN_PROCS: ${LOADGEN_PROCS:-8}
     volumes:
       # Needed to spawn/destroy worker containers on the lab network.
       - /var/run/docker.sock:/var/run/docker.sock
